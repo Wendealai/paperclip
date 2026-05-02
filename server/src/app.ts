@@ -22,6 +22,7 @@ import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { llmRoutes } from "./routes/llms.js";
+import { instanceConfigRoutes } from "./routes/instance-config.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { applyUiBranding } from "./ui-branding.js";
@@ -114,6 +115,7 @@ export async function createApp(
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(sidebarBadgeRoutes(db));
+  api.use(instanceConfigRoutes());
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,

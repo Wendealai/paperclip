@@ -40,6 +40,7 @@ import {
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
+import { readConfigFile } from "../config-file.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -47,6 +48,37 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+
+function readNonEmptyEnvValue(env: Record<string, unknown>, key: string): string | null {
+  const value = env[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function applyInstanceLlmEnv(config: Record<string, unknown>): Record<string, unknown> {
+  const llm = readConfigFile()?.llm;
+  if (!llm?.apiKey?.trim()) return config;
+
+  const env = { ...parseObject(config.env) };
+  let changed = false;
+
+  if (llm.provider === "openai") {
+    if (!readNonEmptyEnvValue(env, "OPENAI_API_KEY")) {
+      env.OPENAI_API_KEY = llm.apiKey.trim();
+      changed = true;
+    }
+    if (llm.baseUrl?.trim() && !readNonEmptyEnvValue(env, "OPENAI_BASE_URL")) {
+      env.OPENAI_BASE_URL = llm.baseUrl.trim();
+      changed = true;
+    }
+  }
+
+  if (llm.provider === "claude" && !readNonEmptyEnvValue(env, "ANTHROPIC_API_KEY")) {
+    env.ANTHROPIC_API_KEY = llm.apiKey.trim();
+    changed = true;
+  }
+
+  return changed ? { ...config, env } : config;
+}
 
 const heartbeatRunListColumns = {
   id: heartbeatRuns.id,
@@ -1175,6 +1207,7 @@ export function heartbeatService(db: Db) {
       agent.companyId,
       mergedConfig,
     );
+    const runtimeResolvedConfig = applyInstanceLlmEnv(resolvedConfig);
     const issueRef = issueId
       ? await db
           .select({
@@ -1238,9 +1271,9 @@ export function heartbeatService(db: Db) {
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
     const runtimeServiceIntents = (() => {
-      const runtimeConfig = parseObject(resolvedConfig.workspaceRuntime);
-      return Array.isArray(runtimeConfig.services)
-        ? runtimeConfig.services.filter(
+      const workspaceRuntimeConfig = parseObject(runtimeResolvedConfig.workspaceRuntime);
+      return Array.isArray(workspaceRuntimeConfig.services)
+        ? workspaceRuntimeConfig.services.filter(
             (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
           )
         : [];
@@ -1364,7 +1397,7 @@ export function heartbeatService(db: Db) {
         await onLog("stderr", `[paperclip] ${warning}\n`);
       }
       const adapterEnv = Object.fromEntries(
-        Object.entries(parseObject(resolvedConfig.env)).filter(
+        Object.entries(parseObject(runtimeResolvedConfig.env)).filter(
           (entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string",
         ),
       );
@@ -1378,7 +1411,7 @@ export function heartbeatService(db: Db) {
         },
         issue: issueRef,
         workspace: executionWorkspace,
-        config: resolvedConfig,
+        config: runtimeResolvedConfig,
         adapterEnv,
         onLog,
       });
@@ -1445,7 +1478,7 @@ export function heartbeatService(db: Db) {
         runId: run.id,
         agent,
         runtime: runtimeForAdapter,
-        config: resolvedConfig,
+        config: runtimeResolvedConfig,
         context,
         onLog,
         onMeta: onAdapterMeta,

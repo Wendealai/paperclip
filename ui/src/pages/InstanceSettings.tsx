@@ -1,15 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Clock3, ExternalLink, Settings } from "lucide-react";
+import { BrainCircuit, Clock3, ExternalLink, KeyRound, Settings } from "lucide-react";
 import type { InstanceSchedulerHeartbeatAgent } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { heartbeatsApi } from "../api/heartbeats";
 import { agentsApi } from "../api/agents";
+import { instanceApi, type InstanceLlmProvider } from "../api/instance";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { queryKeys } from "../lib/queryKeys";
 import { formatDateTime, relativeTime } from "../lib/utils";
 
@@ -26,6 +30,163 @@ function buildAgentHref(agent: InstanceSchedulerHeartbeatAgent) {
   return `/${agent.companyIssuePrefix}/agents/${encodeURIComponent(agent.agentUrlKey)}`;
 }
 
+function LlmSettingsCard() {
+  const queryClient = useQueryClient();
+  const [provider, setProvider] = useState<InstanceLlmProvider | "none">("openai");
+  const [apiKey, setApiKey] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const llmQuery = useQuery({
+    queryKey: queryKeys.instance.llm,
+    queryFn: () => instanceApi.getLlm(),
+  });
+
+  useEffect(() => {
+    if (!llmQuery.data) return;
+    setProvider(llmQuery.data.provider ?? "openai");
+    setBaseUrl(llmQuery.data.baseUrl ?? "");
+    setApiKey("");
+  }, [llmQuery.data]);
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      instanceApi.updateLlm({
+        provider: provider === "none" ? null : provider,
+        apiKey: apiKey.trim() || undefined,
+        baseUrl: provider === "openai" ? baseUrl.trim() || undefined : undefined,
+      }),
+    onSuccess: (data) => {
+      setActionError(null);
+      setApiKey("");
+      queryClient.setQueryData(queryKeys.instance.llm, data);
+    },
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : "Failed to save LLM settings.");
+    },
+  });
+
+  const clearKeyMutation = useMutation({
+    mutationFn: () =>
+      instanceApi.updateLlm({
+        provider: provider === "none" ? null : provider,
+        baseUrl: provider === "openai" ? baseUrl.trim() || undefined : undefined,
+        clearApiKey: true,
+      }),
+    onSuccess: (data) => {
+      setActionError(null);
+      setApiKey("");
+      queryClient.setQueryData(queryKeys.instance.llm, data);
+    },
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : "Failed to clear LLM key.");
+    },
+  });
+
+  const saving = saveMutation.isPending || clearKeyMutation.isPending;
+  const configured = llmQuery.data?.apiKeyConfigured ?? false;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <BrainCircuit className="h-4 w-4 text-muted-foreground" />
+          <CardTitle>LLM</CardTitle>
+        </div>
+        <CardDescription>
+          Default provider credentials for agent runs.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {llmQuery.isLoading ? (
+          <div className="text-sm text-muted-foreground">Loading LLM settings...</div>
+        ) : llmQuery.error ? (
+          <div className="text-sm text-destructive">
+            {llmQuery.error instanceof Error ? llmQuery.error.message : "Failed to load LLM settings."}
+          </div>
+        ) : (
+          <>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="instance-llm-provider">Provider</Label>
+                <Select
+                  value={provider}
+                  onValueChange={(value) => setProvider(value as InstanceLlmProvider | "none")}
+                >
+                  <SelectTrigger id="instance-llm-provider" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="openai">OpenAI compatible</SelectItem>
+                    <SelectItem value="claude">Claude</SelectItem>
+                    <SelectItem value="none">None</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="instance-llm-key">API key</Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="instance-llm-key"
+                    type="password"
+                    value={apiKey}
+                    onChange={(event) => setApiKey(event.target.value)}
+                    placeholder={configured ? llmQuery.data?.apiKeyPreview ?? "configured" : "not configured"}
+                    disabled={provider === "none"}
+                    autoComplete="off"
+                  />
+                  <Badge variant={configured ? "default" : "outline"} className="shrink-0">
+                    {configured ? "Set" : "Unset"}
+                  </Badge>
+                </div>
+              </div>
+            </div>
+
+            {provider === "openai" && (
+              <div className="space-y-2">
+                <Label htmlFor="instance-llm-base-url">Base URL</Label>
+                <Input
+                  id="instance-llm-base-url"
+                  value={baseUrl}
+                  onChange={(event) => setBaseUrl(event.target.value)}
+                  placeholder="https://api.openai.com/v1"
+                />
+              </div>
+            )}
+
+            {actionError && (
+              <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                {actionError}
+              </div>
+            )}
+          </>
+        )}
+      </CardContent>
+      <CardFooter className="gap-2">
+        <Button
+          onClick={() => saveMutation.mutate()}
+          disabled={saving || llmQuery.isLoading}
+          size="sm"
+        >
+          <KeyRound className="h-3.5 w-3.5" />
+          {saving ? "Saving..." : "Save LLM"}
+        </Button>
+        {configured && (
+          <Button
+            onClick={() => clearKeyMutation.mutate()}
+            disabled={saving}
+            variant="outline"
+            size="sm"
+          >
+            Clear key
+          </Button>
+        )}
+      </CardFooter>
+    </Card>
+  );
+}
+
 export function InstanceSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -34,7 +195,7 @@ export function InstanceSettings() {
   useEffect(() => {
     setBreadcrumbs([
       { label: "Instance Settings" },
-      { label: "Heartbeats" },
+      { label: "Settings" },
     ]);
   }, [setBreadcrumbs]);
 
@@ -94,22 +255,93 @@ export function InstanceSettings() {
     return [...map.values()];
   }, [agents]);
 
-  if (heartbeatsQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading scheduler heartbeats...</div>;
-  }
-
-  if (heartbeatsQuery.error) {
-    return (
-      <div className="text-sm text-destructive">
-        {heartbeatsQuery.error instanceof Error
-          ? heartbeatsQuery.error.message
-          : "Failed to load scheduler heartbeats."}
-      </div>
-    );
-  }
+  const heartbeatsContent = heartbeatsQuery.isLoading ? (
+    <div className="text-sm text-muted-foreground">Loading scheduler heartbeats...</div>
+  ) : heartbeatsQuery.error ? (
+    <div className="text-sm text-destructive">
+      {heartbeatsQuery.error instanceof Error
+        ? heartbeatsQuery.error.message
+        : "Failed to load scheduler heartbeats."}
+    </div>
+  ) : agents.length === 0 ? (
+    <EmptyState
+      icon={Clock3}
+      message="No scheduler heartbeats match the current criteria."
+    />
+  ) : (
+    <div className="space-y-4">
+      {grouped.map((group) => (
+        <Card key={group.companyName}>
+          <CardContent className="p-0">
+            <div className="border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              {group.companyName}
+            </div>
+            <div className="divide-y">
+              {group.agents.map((agent) => {
+                const saving = toggleMutation.isPending && toggleMutation.variables?.id === agent.id;
+                return (
+                  <div
+                    key={agent.id}
+                    className="flex items-center gap-3 px-3 py-2 text-sm"
+                  >
+                    <Badge
+                      variant={agent.schedulerActive ? "default" : "outline"}
+                      className="shrink-0 text-[10px] px-1.5 py-0"
+                    >
+                      {agent.schedulerActive ? "On" : "Off"}
+                    </Badge>
+                    <Link
+                      to={buildAgentHref(agent)}
+                      className="font-medium truncate hover:underline"
+                    >
+                      {agent.agentName}
+                    </Link>
+                    <span className="hidden sm:inline text-muted-foreground truncate">
+                      {humanize(agent.title ?? agent.role)}
+                    </span>
+                    <span className="text-muted-foreground tabular-nums shrink-0">
+                      {agent.intervalSec}s
+                    </span>
+                    <span
+                      className="hidden md:inline text-muted-foreground truncate"
+                      title={agent.lastHeartbeatAt ? formatDateTime(agent.lastHeartbeatAt) : undefined}
+                    >
+                      {agent.lastHeartbeatAt
+                        ? relativeTime(agent.lastHeartbeatAt)
+                        : "never"}
+                    </span>
+                    <span className="ml-auto flex items-center gap-1.5 shrink-0">
+                      <Link
+                        to={buildAgentHref(agent)}
+                        className="text-muted-foreground hover:text-foreground"
+                        title="Full agent config"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </Link>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        disabled={saving}
+                        onClick={() => toggleMutation.mutate(agent)}
+                      >
+                        {saving ? "..." : agent.heartbeatEnabled ? "Disable Timer Heartbeat" : "Enable Timer Heartbeat"}
+                      </Button>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
 
   return (
     <div className="max-w-5xl space-y-6">
+      <LlmSettingsCard />
+
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <Settings className="h-5 w-5 text-muted-foreground" />
@@ -132,80 +364,7 @@ export function InstanceSettings() {
         </div>
       )}
 
-      {agents.length === 0 ? (
-        <EmptyState
-          icon={Clock3}
-          message="No scheduler heartbeats match the current criteria."
-        />
-      ) : (
-        <div className="space-y-4">
-          {grouped.map((group) => (
-            <Card key={group.companyName}>
-              <CardContent className="p-0">
-                <div className="border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  {group.companyName}
-                </div>
-                <div className="divide-y">
-                  {group.agents.map((agent) => {
-                    const saving = toggleMutation.isPending && toggleMutation.variables?.id === agent.id;
-                    return (
-                      <div
-                        key={agent.id}
-                        className="flex items-center gap-3 px-3 py-2 text-sm"
-                      >
-                        <Badge
-                          variant={agent.schedulerActive ? "default" : "outline"}
-                          className="shrink-0 text-[10px] px-1.5 py-0"
-                        >
-                          {agent.schedulerActive ? "On" : "Off"}
-                        </Badge>
-                        <Link
-                          to={buildAgentHref(agent)}
-                          className="font-medium truncate hover:underline"
-                        >
-                          {agent.agentName}
-                        </Link>
-                        <span className="hidden sm:inline text-muted-foreground truncate">
-                          {humanize(agent.title ?? agent.role)}
-                        </span>
-                        <span className="text-muted-foreground tabular-nums shrink-0">
-                          {agent.intervalSec}s
-                        </span>
-                        <span
-                          className="hidden md:inline text-muted-foreground truncate"
-                          title={agent.lastHeartbeatAt ? formatDateTime(agent.lastHeartbeatAt) : undefined}
-                        >
-                          {agent.lastHeartbeatAt
-                            ? relativeTime(agent.lastHeartbeatAt)
-                            : "never"}
-                        </span>
-                        <span className="ml-auto flex items-center gap-1.5 shrink-0">
-                          <Link
-                            to={buildAgentHref(agent)}
-                            className="text-muted-foreground hover:text-foreground"
-                            title="Full agent config"
-                          >
-                            <ExternalLink className="h-3.5 w-3.5" />
-                          </Link>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 px-2 text-xs"
-                            disabled={saving}
-                            onClick={() => toggleMutation.mutate(agent)}
-                          >
-                            {saving ? "..." : agent.heartbeatEnabled ? "Disable Timer Heartbeat" : "Enable Timer Heartbeat"}
-                          </Button>
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
+      {heartbeatsContent}
     </div>
   );
 }
